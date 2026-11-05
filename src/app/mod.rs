@@ -225,6 +225,14 @@ pub struct PaneGeom {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingPrefix {
+    Z,
+    ShiftZ,
+    D,
+    Leader,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelPoint {
     pub annotation_idx: usize,
     pub char_offset: usize,
@@ -1450,6 +1458,7 @@ pub struct App {
     pub update_info: Option<UpdateInfo>,
     /// Accumulated digit count for {N}G jump-to-line
     pub pending_count: Option<usize>,
+    pub pending_prefix: Option<PendingPrefix>,
     /// Source line from `--line`, applied once after the first render
     /// (when the viewport height is known) so the target can be centered.
     pub pending_start_line: Option<u32>,

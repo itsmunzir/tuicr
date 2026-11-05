@@ -1,6 +1,6 @@
 use super::render_perf_tests::{app_with, file};
 use crate::app::*;
-use crate::handler::handle_paste;
+use crate::handler::{handle_key, handle_paste};
 use crate::model::{LineRange, LineSide};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -74,6 +74,30 @@ fn should_start_a_range_comment_on_a_mouse_selection() {
         Some((LineRange { start: 3, end: 4 }, LineSide::New))
     );
     assert_eq!(app.comment_buffer, "rename");
+}
+
+#[test]
+fn should_type_into_the_comment_when_a_paste_interrupts_a_prefix() {
+    let mut app = app_on_line_3();
+    let shift_z = KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::SHIFT);
+
+    handle_key(&mut app, shift_z);
+    handle_paste(&mut app, "dictated ".to_string());
+    handle_key(&mut app, shift_z);
+
+    assert!(!app.should_quit);
+    assert_eq!(app.comment_buffer, "dictated Z");
+}
+
+#[test]
+fn should_drop_a_pending_count_when_a_paste_is_ignored() {
+    let mut app = app_on_line_3();
+    app.focused_panel = FocusedPanel::FileList;
+    app.pending_count = Some(5);
+
+    handle_paste(&mut app, "not here".to_string());
+
+    assert_eq!(app.pending_count, None);
 }
 
 #[test]
