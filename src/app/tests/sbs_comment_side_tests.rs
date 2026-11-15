@@ -230,6 +230,73 @@ fn leader_walk_ignores_the_sides_in_unified_view() {
 }
 
 #[test]
+fn leader_walk_mirrors_when_the_file_list_is_on_the_right() {
+    let mut app = build_app();
+    app.file_list_position = FileListPosition::Right;
+    app.diff_view_mode = DiffViewMode::SideBySide;
+    app.show_file_list = true;
+    app.focused_panel = FocusedPanel::Diff;
+    app.cursor_side = LineSide::Old;
+
+    // Layout is old | new | file list: `l` walks old -> new -> file list.
+    app.focus_pane_right();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert_eq!(app.cursor_side, LineSide::New);
+
+    app.focus_pane_right();
+    assert_eq!(app.focused_panel, FocusedPanel::FileList);
+    assert_eq!(app.cursor_side, LineSide::New);
+
+    // Already rightmost: stays put.
+    app.focus_pane_right();
+    assert_eq!(app.focused_panel, FocusedPanel::FileList);
+
+    // `h` comes back: file list -> diff (side kept) -> old.
+    app.focus_pane_left();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert_eq!(app.cursor_side, LineSide::New);
+
+    app.focus_pane_left();
+    assert_eq!(app.cursor_side, LineSide::Old);
+
+    // Already leftmost: stays put.
+    app.focus_pane_left();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+    assert_eq!(app.cursor_side, LineSide::Old);
+}
+
+#[test]
+fn leader_walk_on_the_right_in_unified_view() {
+    let mut app = build_app();
+    app.file_list_position = FileListPosition::Right;
+    app.diff_view_mode = DiffViewMode::Unified;
+    app.show_file_list = true;
+    app.focused_panel = FocusedPanel::Diff;
+
+    // The diff is the left pane, so `h` has nowhere to go.
+    app.focus_pane_left();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+
+    app.focus_pane_right();
+    assert_eq!(app.focused_panel, FocusedPanel::FileList);
+
+    app.focus_pane_left();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
+
+#[test]
+fn leader_walk_on_the_right_skips_a_hidden_file_list() {
+    let mut app = build_app();
+    app.file_list_position = FileListPosition::Right;
+    app.diff_view_mode = DiffViewMode::Unified;
+    app.show_file_list = false;
+    app.focused_panel = FocusedPanel::Diff;
+
+    app.focus_pane_right();
+    assert_eq!(app.focused_panel, FocusedPanel::Diff);
+}
+
+#[test]
 fn horizontal_keys_scroll_in_unified_and_leave_side_unchanged() {
     let mut app = build_app();
     app.diff_view_mode = DiffViewMode::Unified;
@@ -441,16 +508,14 @@ fn suggestion_app_from_patch(patch: &str) -> App {
 fn suggestion_app_from_patch_in_view(patch: &str, view: DiffViewMode) -> App {
     let mut app = build_app();
     app.diff_view_mode = view;
-    app.diff_files = crate::vcs::diff_parser::parse_file_patches(
-        vec![crate::model::FilePatch::new(
+    app.diff_files =
+        crate::vcs::diff_parser::parse_file_patches(vec![crate::model::FilePatch::new(
             Some("test.rs".into()),
             Some("test.rs".into()),
             FileStatus::Modified,
             patch,
-        )],
-        &SyntaxHighlighter::default(),
-    )
-    .unwrap();
+        )])
+        .unwrap();
     app.rebuild_annotations();
     let indices: Vec<_> = app
         .line_annotations
@@ -650,4 +715,30 @@ fn visual_suggestion_skips_existing_comment_rows() {
             }
         }
     }
+}
+
+#[test]
+fn visual_comment_rejects_selection_spanning_two_files() {
+    let mut app = build_app();
+    let mut second = sbs_line(None, Some(4));
+    if let AnnotatedLine::SideBySideLine { file_idx, .. } = &mut second {
+        *file_idx = 1;
+    }
+    app.line_annotations = vec![sbs_line(None, Some(41)), second];
+    app.input_mode = InputMode::VisualSelect;
+    let point = |annotation_idx| SelPoint {
+        annotation_idx,
+        char_offset: 0,
+        side: LineSide::New,
+    };
+    app.visual_selection = Some(VisualSelection {
+        anchor: point(0),
+        head: point(1),
+    });
+    assert!(app.visual_selection_line_range().is_none());
+
+    crate::handler::handle_visual_action(&mut app, Action::AddRangeComment);
+
+    assert_ne!(app.input_mode, InputMode::Comment);
+    assert!(app.comment_line_range.is_none());
 }
