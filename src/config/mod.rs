@@ -11,10 +11,22 @@ use toml::Value;
 ///
 /// Booleans keep the legacy global modes. `"auto"` selects per-extension
 /// comparison using the built-in table plus `[ignore_whitespace_overrides]`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IgnoreWhitespaceConfig {
     Bool(bool),
     Auto,
+}
+
+impl Serialize for IgnoreWhitespaceConfig {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Bool(value) => serializer.serialize_bool(*value),
+            Self::Auto => serializer.serialize_str("auto"),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for IgnoreWhitespaceConfig {
@@ -165,6 +177,9 @@ pub struct AppConfig {
     pub backend: Option<String>,
     pub comment_types: Option<Vec<CommentTypeConfig>>,
     pub show_file_list: Option<bool>,
+    /// Which side of the diff the file list sits on: `"left"` (the default)
+    /// or `"right"`.
+    pub file_list_position: Option<String>,
     /// Join single-child directory chains in the file tree. Defaults to false.
     pub compact_folders: Option<bool>,
     /// Whether pull-request CI checks are fetched and shown.
@@ -269,6 +284,7 @@ const KNOWN_KEYS: &[&str] = &[
     "backend",
     "comment_types",
     "show_file_list",
+    "file_list_position",
     "compact_folders",
     "show_pr_checks",
     "show_pr_comments",
@@ -328,6 +344,10 @@ pub fn config_path() -> Result<PathBuf> {
 
 pub fn themes_dir() -> Result<PathBuf> {
     Ok(config_dir()?.join("themes"))
+}
+
+pub fn syntaxes_dir() -> Result<PathBuf> {
+    Ok(config_dir()?.join("syntaxes"))
 }
 
 fn config_path_env_parts() -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
@@ -614,6 +634,12 @@ fn load_config_from_path(path: &Path) -> Result<ConfigLoadOutcome> {
             .get("comment_types")
             .and_then(|v| parse_comment_types(v, &mut warnings)),
         show_file_list: read_bool(table, "show_file_list", &mut warnings),
+        file_list_position: read_enum(
+            table,
+            "file_list_position",
+            &["left", "right"],
+            &mut warnings,
+        ),
         compact_folders: read_bool(table, "compact_folders", &mut warnings),
         show_pr_checks: read_bool(table, "show_pr_checks", &mut warnings),
         show_pr_comments: read_bool(table, "show_pr_comments", &mut warnings),
@@ -856,7 +882,7 @@ fn parse_comment_types(
                             "Warning: Config key 'comment_types[{index}].color' cannot be empty; ignoring value"
                         ));
                         None
-                    } else if !is_supported_color_value(trimmed) {
+                    } else if crate::theme::parse_color_value(trimmed).is_none() {
                         warnings.push(format!(
                             "Warning: Config key 'comment_types[{index}].color' must be a named color or #RRGGBB; ignoring value"
                         ));
@@ -923,51 +949,30 @@ fn parse_optional_nonempty_string(
     }
 }
 
-fn is_supported_color_value(value: &str) -> bool {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized.is_empty() {
-        return false;
-    }
-
-    if let Some(hex) = normalized.strip_prefix('#') {
-        return hex.len() == 6 && hex.chars().all(|ch| ch.is_ascii_hexdigit());
-    }
-
-    matches!(
-        normalized.as_str(),
-        "black"
-            | "red"
-            | "green"
-            | "yellow"
-            | "blue"
-            | "magenta"
-            | "cyan"
-            | "gray"
-            | "grey"
-            | "darkgray"
-            | "dark_gray"
-            | "darkgrey"
-            | "dark_grey"
-            | "lightred"
-            | "light_red"
-            | "lightgreen"
-            | "light_green"
-            | "lightyellow"
-            | "light_yellow"
-            | "lightblue"
-            | "light_blue"
-            | "lightmagenta"
-            | "light_magenta"
-            | "lightcyan"
-            | "light_cyan"
-            | "white"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn should_round_trip_ignore_whitespace_config() {
+        for value in [
+            IgnoreWhitespaceConfig::Bool(true),
+            IgnoreWhitespaceConfig::Bool(false),
+            IgnoreWhitespaceConfig::Auto,
+        ] {
+            let config = AppConfig {
+                ignore_whitespace: Some(value.clone()),
+                ..AppConfig::default()
+            };
+            let json = serde_json::to_string(&config).expect("serialize json");
+            let back: AppConfig = serde_json::from_str(&json).expect("deserialize json");
+            assert_eq!(back.ignore_whitespace, Some(value.clone()));
+            let toml = toml::to_string(&config).expect("serialize toml");
+            let back: AppConfig = toml::from_str(&toml).expect("deserialize toml");
+            assert_eq!(back.ignore_whitespace, Some(value));
+        }
+    }
 
     /// Helper: write a config file, parse it, and return the outcome.
     fn parse_config(toml_content: &str) -> ConfigLoadOutcome {
@@ -1145,6 +1150,47 @@ mod tests {
             None
         );
         assert_eq!(outcome.warnings.len(), 1);
+    }
+
+    // file_list_position
+
+    fn file_list_position(outcome: &ConfigLoadOutcome) -> Option<&str> {
+        outcome
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.file_list_position.as_deref())
+    }
+
+    #[test]
+    fn should_parse_file_list_position_left() {
+        let outcome = parse_config("file_list_position = \"left\"\n");
+        assert_eq!(file_list_position(&outcome), Some("left"));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_parse_file_list_position_right() {
+        let outcome = parse_config("file_list_position = \"right\"\n");
+        assert_eq!(file_list_position(&outcome), Some("right"));
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_leave_file_list_position_unset_by_default() {
+        let outcome = parse_config("wrap = true\n");
+        assert_eq!(file_list_position(&outcome), None);
+        assert!(outcome.warnings.is_empty());
+    }
+
+    #[test]
+    fn should_warn_and_ignore_file_list_position_with_invalid_value() {
+        let outcome = parse_config("file_list_position = \"top\"\n");
+        assert_eq!(file_list_position(&outcome), None);
+        assert_eq!(outcome.warnings.len(), 1);
+        assert_eq!(
+            outcome.warnings[0],
+            "Warning: Config key 'file_list_position' must be \"left\" or \"right\"; got \"top\", ignoring"
+        );
     }
 
     // show_pr_checks
